@@ -44,10 +44,15 @@ application — `main.dart` and `pubspec.yaml` will both be replaced entirely.
 
 ### Why Riverpod over BLoC or Provider?
 
-Riverpod 2.x `AsyncNotifier` maps directly onto the "load from DB → display → mutate → reload"
+Riverpod 3.x `AsyncNotifier` maps directly onto the "load from DB → display → mutate → reload"
 cycle without extra boilerplate. It is context-independent, compile-safe, and pairs naturally with
 the repository pattern. BLoC is equally valid but adds ceremony that is disproportionate for a
 data-CRUD app of this size.
+
+> **Riverpod 3.x breaking change:** `FamilyAsyncNotifier` is removed. Family notifiers are now
+> plain `AsyncNotifier` subclasses that receive their argument via a constructor parameter. The
+> provider is declared with `AsyncNotifierProvider.family` and the argument is passed in
+> `build()` and stored on the notifier instance.
 
 ### Why `sqflite` over `drift`?
 
@@ -422,6 +427,15 @@ App Start
 `MealEntryEditScreen` receives either a loaded `MealEntry` (edit) or `null` (new). The screen title
 and save behaviour differ accordingly.
 
+For the edit route (`/meal/:id`), the full `MealEntry` object is passed via GoRouter's `extra`
+parameter so the edit screen pre-fills immediately without an extra DB round-trip:
+
+```dart
+context.push('/meal/${entry.id}', extra: entry);
+```
+
+The router unwraps it as: `state.extra is MealEntry ? state.extra as MealEntry : null`.
+
 ---
 
 ## 7. Screen Specifications
@@ -494,29 +508,39 @@ top, and allows navigation to edit any individual entry.
 
 **Form sections (in order):**
 
-#### Section A — Basic Info (always visible)
+> **Read-only display rule:** All nutrient fields (Sections B, C, D) are **display-only**. They
+> render the stored value but reject keyboard input — the `readOnly: true` flag is set on every
+> `NutrientField`. Only **Date** and **Description** are interactive.
+
+#### Section A — Basic Info (always visible, editable)
 
 | Field | Widget | Validation |
 |---|---|---|
-| Date | `TextFormField` (read-only) + `showDatePicker` | Required |
+| Date | `InkWell` wrapping `InputDecorator` + `showDatePicker` | Required |
 | Description | `TextFormField`, multiline, max 3 lines | Required, min 1 char |
 
-#### Section B — Macronutrients (always visible)
+The Date field is an `InkWell` wrapping an `InputDecorator` (not a `TextFormField`) so tapping
+anywhere on the decorated box opens the system date picker while the displayed value stays
+formatted via `DateFormat('d MMMM yyyy')`.
 
-Rendered as a non-collapsible titled `Card`.
+#### Section B — Macronutrients (collapsible `NutrientSection`, initially expanded, **read-only**)
 
-| Field | Suffix | Required? |
+Rendered with `NutrientSection` (`ExpansionTile` inside a `Card`), set `initiallyExpanded: true`.
+
+| Field | Suffix | Notes |
 |---|---|---|
-| Calories | kcal | ✅ |
-| Protein | g | ✅ |
-| Total Fat | g | ✅ |
-| Carbohydrates | g | ✅ |
-| Dietary Fiber | g | ✅ |
-| Sugars | g | ✅ |
-| Saturated Fat | g | ➖ |
-| Trans Fat | g | ➖ |
+| Calories | kcal | required macro |
+| Protein | g | required macro |
+| Total Fat | g | required macro |
+| Carbohydrates | g | required macro |
+| Dietary Fiber | g | required macro |
+| Sugars | g | required macro |
+| Saturated Fat | g | optional |
+| Trans Fat | g | optional |
+| Cholesterol | mg | optional |
+| Water | ml | optional |
 
-#### Section C — Vitamins (collapsible `ExpansionTile`, **placeholder**)
+#### Section C — Vitamins (collapsible `NutrientSection`, **read-only placeholder**)
 
 > **Note:** This section is a UI placeholder for future population (e.g., via nutrition API or
 > barcode scanner). All 13 vitamin fields are present but may be left blank.
@@ -525,16 +549,12 @@ Vitamin A (µg RAE), Vitamin C (mg), Vitamin D (µg), Vitamin E (mg), Vitamin K 
 Thiamin B1 (mg), Riboflavin B2 (mg), Niacin B3 (mg), Vitamin B6 (mg), Folate B9 (µg DFE),
 Vitamin B12 (µg), Pantothenic Acid B5 (mg), Biotin B7 (µg).
 
-#### Section D — Minerals (collapsible `ExpansionTile`, **placeholder**)
+#### Section D — Minerals (collapsible `NutrientSection`, **read-only placeholder**)
 
 > Same placeholder note as vitamins.
 
 Calcium (mg), Iron (mg), Magnesium (mg), Phosphorus (mg), Potassium (mg), Sodium (mg),
 Zinc (mg), Copper (mg), Manganese (mg), Selenium (µg).
-
-#### Section E — Other (collapsible `ExpansionTile`)
-
-Cholesterol (mg), Water (g).
 
 **NutrientField shared widget:**
 
@@ -542,17 +562,45 @@ Cholesterol (mg), Water (g).
 // lib/presentation/screens/meal_entry_edit/widgets/nutrient_field.dart
 
 class NutrientField extends StatelessWidget {
+  const NutrientField({
+    required this.label,
+    required this.unit,        // suffix text, e.g. "g", "mg", "kcal"
+    required this.initialValue,
+    required this.onChanged,
+    this.required = false,
+    this.readOnly = false,     // when true: filled tint, no keyboard, no validator
+  });
+
   final String label;
-  final String suffix;        // unit abbreviation
+  final String unit;
+  final double? initialValue;
+  final ValueChanged<double?> onChanged;
   final bool required;
-  final TextEditingController controller;
-  final String? Function(String?)? validator;
-  // ...
+  final bool readOnly;
 }
 ```
 
-Each field uses `TextInputType.numberWithOptions(decimal: true)`. Optional fields show a
-`TextStyle` hint "optional" in the suffix. Required fields add a red `*` to the label.
+When `readOnly` is `true`:
+- `TextFormField.readOnly` is set, suppressing the keyboard.
+- The field background is tinted with `colorScheme.surfaceContainerHighest`.
+- `inputFormatters` is set to `[]` and `validator` is `null`.
+- `onChanged` is `null` (Flutter ignores the no-op closure).
+
+When `readOnly` is `false`, the field uses `TextInputType.numberWithOptions(decimal: true)` and
+`FilteringTextInputFormatter` to allow only digits and `.`.
+
+**NutrientSection shared widget:**
+
+```dart
+// lib/presentation/screens/meal_entry_edit/widgets/nutrient_section.dart
+
+class NutrientSection extends StatelessWidget {
+  // Wraps children in an ExpansionTile inside a Card.
+  // padding: EdgeInsets.fromLTRB(16, 8, 16, 16)  ← top=8 prevents floating
+  //                                                  label from being clipped
+  // clipBehavior is NOT set (default Clip.none) for the same reason.
+}
+```
 
 ---
 
@@ -573,16 +621,43 @@ ProviderScope
 
 ```dart
 class MealEntryEditState {
-  final MealEntry draft;   // current form values — updated on every field change
-  final bool isDirty;      // true once user has changed any field
-  final bool isSaving;     // true while the DB write is in progress
-  final String? error;     // non-null if last save failed
+  final MealEntry? original; // null when creating a new entry
+  final MealEntry entry;     // current form values
+  final bool isSaving;       // true while the DB write is in progress
+  final String? saveError;   // non-null if last save failed
+
+  // Computed getters
+  bool get isDirty => entry != original;  // uses Equatable equality
+  bool get isNew   => original == null;
 }
 ```
 
-The edit screen calls `ref.read(mealEntryEditProvider.notifier).updateField(...)` on each
-`TextEditingController` change listener. `save()` calls the repository, pops the route on success,
-and sets `error` on failure.
+The edit screen calls `ref.read(mealEntryEditProvider.notifier).update(updatedEntry)` whenever
+date or description changes. `save()` calls the repository, returns `true` on success (the screen
+then pops and invalidates the list/detail providers), or sets `saveError` on failure.
+
+### Provider initialisation pattern
+
+Riverpod forbids mutating a provider while the widget tree is building. The edit screen
+initialises the provider in `initState()` deferred by one frame:
+
+```dart
+@override
+void initState() {
+  super.initState();
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!mounted) return;
+    ref.read(mealEntryEditProvider.notifier).init(
+      existing: widget.existingEntry,
+      date: widget.initialDate,
+    );
+  });
+}
+```
+
+Do **not** call `ref.read(...).init()` directly inside `didChangeDependencies()` — that runs
+during the build phase and triggers a "Tried to modify a provider while the widget tree was
+building" error.
 
 ### Refresh strategy
 

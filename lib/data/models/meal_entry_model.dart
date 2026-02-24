@@ -128,6 +128,47 @@ class MealEntry extends Equatable {
         water: (m['water'] as num?)?.toDouble(),
       );
 
+  /// Parses the camelCase JSON object returned by the OpenAI nutritionist prompt.
+  /// [date] and [text] are left at placeholder defaults — the caller must
+  /// merge them from the current form state via [copyWith].
+  factory MealEntry.fromAiJson(Map<String, dynamic> j) => MealEntry(
+        date: DateTime.now(),
+        text: '',
+        calories: (j['calories'] as num?)?.toDouble() ?? 0,
+        protein: (j['protein'] as num?)?.toDouble() ?? 0,
+        totalFat: (j['totalFat'] as num?)?.toDouble() ?? 0,
+        carbohydrates: (j['carbohydrates'] as num?)?.toDouble() ?? 0,
+        dietaryFiber: (j['dietaryFiber'] as num?)?.toDouble() ?? 0,
+        sugars: (j['sugars'] as num?)?.toDouble() ?? 0,
+        saturatedFat: (j['saturatedFat'] as num?)?.toDouble(),
+        transFat: (j['transFat'] as num?)?.toDouble(),
+        cholesterol: (j['cholesterol'] as num?)?.toDouble(),
+        water: (j['water'] as num?)?.toDouble(),
+        vitaminA: (j['vitaminA'] as num?)?.toDouble(),
+        vitaminC: (j['vitaminC'] as num?)?.toDouble(),
+        vitaminD: (j['vitaminD'] as num?)?.toDouble(),
+        vitaminE: (j['vitaminE'] as num?)?.toDouble(),
+        vitaminK: (j['vitaminK'] as num?)?.toDouble(),
+        thiaminB1: (j['thiaminB1'] as num?)?.toDouble(),
+        riboflavinB2: (j['riboflavinB2'] as num?)?.toDouble(),
+        niacinB3: (j['niacinB3'] as num?)?.toDouble(),
+        vitaminB6: (j['vitaminB6'] as num?)?.toDouble(),
+        folateB9: (j['folateB9'] as num?)?.toDouble(),
+        vitaminB12: (j['vitaminB12'] as num?)?.toDouble(),
+        pantothenicAcidB5: (j['pantothenicAcidB5'] as num?)?.toDouble(),
+        biotinB7: (j['biotinB7'] as num?)?.toDouble(),
+        calcium: (j['calcium'] as num?)?.toDouble(),
+        iron: (j['iron'] as num?)?.toDouble(),
+        magnesium: (j['magnesium'] as num?)?.toDouble(),
+        phosphorus: (j['phosphorus'] as num?)?.toDouble(),
+        potassium: (j['potassium'] as num?)?.toDouble(),
+        sodium: (j['sodium'] as num?)?.toDouble(),
+        zinc: (j['zinc'] as num?)?.toDouble(),
+        copper: (j['copper'] as num?)?.toDouble(),
+        manganese: (j['manganese'] as num?)?.toDouble(),
+        selenium: (j['selenium'] as num?)?.toDouble(),
+      );
+
   Map<String, dynamic> toMap() => {
         if (id != null) 'id': id,
         'date': date.toIso8601String(),

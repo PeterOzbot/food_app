@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../../data/models/meal_entry_model.dart';
+import '../../providers/ai_macro_provider.dart';
 import '../../providers/day_detail_provider.dart';
 import '../../providers/meal_entry_edit_provider.dart';
 import '../../providers/meal_list_provider.dart';
@@ -54,6 +55,29 @@ class _MealEntryEditScreenState extends ConsumerState<MealEntryEditScreen> {
     final entry = editState.entry;
     final isNew = editState.isNew;
 
+    // React to AI-Fill completion and errors.
+    ref.listen<AsyncValue<MealEntry?>>(aiMacroProvider, (_, next) {
+      next.whenOrNull(
+        data: (aiEntry) {
+          if (aiEntry == null) return; // idle — nothing to do
+          // Merge AI nutrients with the form's current date and description.
+          final current = ref.read(mealEntryEditProvider).entry;
+          final merged = aiEntry.copyWith(date: current.date, text: current.text);
+          ref.read(mealEntryEditProvider.notifier).update(merged);
+          ref.read(aiMacroProvider.notifier).reset();
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Nutrients filled by AI ✓')),
+          );
+        },
+        error: (error, _) {
+          ref.read(aiMacroProvider.notifier).reset();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('AI error: $error')),
+          );
+        },
+      );
+    });
+
     return PopScope(
       canPop: !editState.isDirty,
       onPopInvokedWithResult: (didPop, _) async {
@@ -86,7 +110,7 @@ class _MealEntryEditScreenState extends ConsumerState<MealEntryEditScreen> {
           key: _formKey,
           child: ListView(
             children: [
-              _BasicInfoSection(entry: entry),
+              _BasicInfoSection(entry: entry, isNew: isNew),
               _MacroSection(entry: entry),
               NutrientSection(
                 title: 'Vitamins',
@@ -176,13 +200,17 @@ class _MealEntryEditScreenState extends ConsumerState<MealEntryEditScreen> {
 // ── Basic Info Section ───────────────────────────────────────────────────────
 
 class _BasicInfoSection extends ConsumerWidget {
-  const _BasicInfoSection({required this.entry});
+  const _BasicInfoSection({required this.entry, required this.isNew});
   final MealEntry entry;
+  final bool isNew;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     void upd(MealEntry updated) =>
         ref.read(mealEntryEditProvider.notifier).update(updated);
+
+    final aiState = ref.watch(aiMacroProvider);
+    final isAiLoading = aiState.isLoading;
 
     return Card(
       margin: const EdgeInsets.fromLTRB(12, 12, 12, 6),
@@ -229,6 +257,25 @@ class _BasicInfoSection extends ConsumerWidget {
                   (v == null || v.trim().isEmpty) ? 'Required' : null,
               onChanged: (v) => upd(entry.copyWith(text: v)),
             ),
+            // AI-Fill button — only visible when creating a new entry.
+            if (isNew) ...[
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: (isAiLoading || entry.text.trim().isEmpty)
+                    ? null
+                    : () => ref
+                        .read(aiMacroProvider.notifier)
+                        .estimate(entry.text),
+                icon: isAiLoading
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.auto_awesome, size: 18),
+                label: Text(isAiLoading ? 'Calculating…' : 'AI-Fill'),
+              ),
+            ],
           ],
         ),
       ),

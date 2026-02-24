@@ -12,6 +12,7 @@
 8. [State Management Design](#8-state-management-design)
 9. [Repository Layer](#9-repository-layer)
 10. [Implementation Sequencing](#10-implementation-sequencing)
+11. [AI Macro Calculation](#11-ai-macro-calculation)
 
 ---
 
@@ -41,6 +42,8 @@ application — `main.dart` and `pubspec.yaml` will both be replaced entirely.
 | `go_router` | `^14.0` | Declarative navigation with deep-link support |
 | `intl` | `^0.20` | Date / number formatting |
 | `equatable` | `^2.0` | Value equality on model classes without boilerplate |
+| `http` | `^1.2` | HTTP client for OpenAI REST API calls |
+| `flutter_dotenv` | `^5.2` | Load `.env` file at startup for secure API key storage |
 
 ### Why Riverpod over BLoC or Provider?
 
@@ -87,8 +90,10 @@ lib/
 │   │   └── migrations/
 │   │       ├── app_migration.dart         ← abstract Migration base class
 │   │       └── v1_create_meal_entries.dart
-│   └── router/
-│       └── app_router.dart               ← GoRouter route definitions
+│   ├── router/
+│   │   └── app_router.dart               ← GoRouter route definitions
+│   └── services/
+│       └── openai_service.dart           ← wraps the OpenAI chat/completions endpoint
 │
 ├── data/
 │   ├── models/
@@ -107,7 +112,8 @@ lib/
     │   ├── repository_provider.dart       ← MealEntryRepository instance
     │   ├── meal_list_provider.dart        ← AsyncNotifier<List<DaySummary>>
     │   ├── day_detail_provider.dart       ← AsyncNotifier<List<MealEntry>>
-    │   └── meal_entry_edit_provider.dart  ← Notifier<MealEntryEditState>
+    │   ├── meal_entry_edit_provider.dart  ← Notifier<MealEntryEditState>
+    │   └── ai_macro_provider.dart        ← AsyncNotifier driving the AI-Fill call
     └── screens/
         ├── meal_list/
         │   ├── meal_list_screen.dart
@@ -518,10 +524,22 @@ top, and allows navigation to edit any individual entry.
 |---|---|---|
 | Date | `InkWell` wrapping `InputDecorator` + `showDatePicker` | Required |
 | Description | `TextFormField`, multiline, max 3 lines | Required, min 1 char |
+| **AI-Fill** button | `FilledButton.icon` with spinner | **New entry only** |
 
 The Date field is an `InkWell` wrapping an `InputDecorator` (not a `TextFormField`) so tapping
 anywhere on the decorated box opens the system date picker while the displayed value stays
 formatted via `DateFormat('d MMMM yyyy')`.
+
+**AI-Fill button** (visible only when `state.isNew == true`):
+
+- Rendered as a `FilledButton.icon` immediately below the Description field.
+- Disabled when the Description field is empty or when an AI call is already in progress.
+- When pressed, calls `ref.read(aiMacroProvider.notifier).estimate(description)`.
+- While loading, the button icon is replaced by a `CircularProgressIndicator` (size 16).
+- On success, calls `ref.read(mealEntryEditProvider.notifier).update(filledEntry)` to populate
+  all nutrient fields in the form.
+- On error, shows a `SnackBar` with the error message; nutrient fields remain at their
+  previous values.
 
 #### Section B — Macronutrients (collapsible `NutrientSection`, initially expanded, **read-only**)
 
@@ -726,6 +744,157 @@ Implement in this order to always have a runnable app at each step:
 | 9 | `MealEntryEditScreen` — Vitamins + Minerals sections | Placeholder UI complete |
 | 10 | Delete entry from `DayDetailScreen` | Full CRUD complete |
 | 11 | Empty-state handling, error banners, loading indicators | Polish |
+| 12 | `OpenAiService` + `aiMacroProvider` + AI-Fill button | AI-Fill populates nutrients end-to-end |
+
+---
+
+## 11. AI Macro Calculation
+
+### Overview
+
+When creating a **new** meal entry, the user can type a meal description (e.g. "200 g grilled chicken breast with 150 g boiled rice") and press **AI-Fill**. The app sends the description to the OpenAI chat completions endpoint using the `gpt-4o-mini` model and receives a JSON object containing estimated values for every nutritional field defined in `MealEntry`. The parsed values are written back into the form via the `mealEntryEditProvider`.
+
+### Package additions
+
+| Package | Version | Purpose |
+|---|---|---|
+| `http` | `^1.2` | HTTP client for the OpenAI REST call |
+| `flutter_dotenv` | `^5.2` | Load `.env` at startup; exposes `dotenv.env['OPENAI_API_KEY']` |
+
+Run:
+```
+flutter pub add http flutter_dotenv
+```
+
+Create `.env` in the project root (add to `.gitignore`):
+```
+OPENAI_API_KEY=sk-...
+```
+
+Load it in `main.dart` before `runApp`:
+```dart
+await dotenv.load(fileName: '.env');
+```
+
+> **Security:** Never hardcode the API key. For production, route requests through a backend
+> proxy so the raw key is never shipped inside the client binary. As an alternative to `.env`,
+> the key can be injected at build time via `--dart-define=OPENAI_API_KEY=sk-...` and read
+> with `const String.fromEnvironment('OPENAI_API_KEY')`.
+
+### OpenAI API configuration
+
+| Parameter | Value |
+|---|---|
+| Endpoint | `https://api.openai.com/v1/chat/completions` |
+| Model | `gpt-4o-mini` |
+| `response_format` | `{ "type": "json_object" }` |
+| `temperature` | `0.2` (low for deterministic nutritional estimates) |
+| `max_tokens` | `800` |
+
+### Prompt template
+
+**System message:**
+```
+You are a precise nutritionist. Given a meal description, estimate the nutritional
+content and return ONLY a JSON object with the keys listed below. Use null (not 0)
+for values you cannot confidently estimate. Round all numbers to 1 decimal place.
+
+Required keys (camelCase, matching Dart field names):
+calories, protein, totalFat, carbohydrates, dietaryFiber, sugars,
+saturatedFat, transFat, cholesterol, water,
+vitaminA, vitaminC, vitaminD, vitaminE, vitaminK,
+thiaminB1, riboflavinB2, niacinB3, vitaminB6, folateB9,
+vitaminB12, pantothenicAcidB5, biotinB7,
+calcium, iron, magnesium, phosphorus, potassium,
+sodium, zinc, copper, manganese, selenium,
+confidenceLevel, notes
+```
+
+**User message:**
+```
+Meal description: <description text from the form>
+```
+
+`confidenceLevel` is a string (`"high"` / `"medium"` / `"low"`); `notes` is a free-text
+string explaining any assumptions. Both are logged for debugging but not persisted to the DB.
+
+### JSON response schema → MealEntry mapping
+
+| JSON key | `MealEntry` field | Unit | Required? |
+|---|---|---|---|
+| `calories` | `calories` | kcal | ✓ |
+| `protein` | `protein` | g | ✓ |
+| `totalFat` | `totalFat` | g | ✓ |
+| `carbohydrates` | `carbohydrates` | g | ✓ |
+| `dietaryFiber` | `dietaryFiber` | g | ✓ |
+| `sugars` | `sugars` | g | ✓ |
+| `saturatedFat` | `saturatedFat` | g | optional |
+| `transFat` | `transFat` | g | optional |
+| `cholesterol` | `cholesterol` | mg | optional |
+| `water` | `water` | ml | optional |
+| `vitaminA` … `biotinB7` | 13 vitamin fields | various | optional |
+| `calcium` … `selenium` | 10 mineral fields | various | optional |
+
+### `OpenAiService` — `lib/core/services/openai_service.dart`
+
+```dart
+class OpenAiService {
+  static const _endpoint =
+      'https://api.openai.com/v1/chat/completions';
+  static const _model = 'gpt-4o-mini';
+
+  final String _apiKey;
+  OpenAiService(this._apiKey);
+
+  /// Returns a [MealEntry] stub with all nutritional fields populated.
+  /// Throws [OpenAiException] on network error, non-200 status, or bad JSON.
+  Future<MealEntry> estimateMacros(String description) async { ... }
+}
+```
+
+The method:
+1. POSTs the system + user messages to `_endpoint`.
+2. Parses `response.choices[0].message.content` as JSON.
+3. Calls `MealEntry.fromMap(json)` (or a dedicated `MealEntry.fromAiJson(json)`) to build
+   a stub entry (no `id`, no `date`, no `description` — those come from the form).
+4. Returns the stub; the caller merges it into the current `MealEntryEditState.entry` via
+   `entry.copyWith(...)`.
+
+### `aiMacroProvider` — `lib/presentation/providers/ai_macro_provider.dart`
+
+```dart
+// State: AsyncValue<MealEntry?> — null = idle, data = result, error = failure
+final aiMacroProvider =
+    AsyncNotifierProvider<AiMacroNotifier, MealEntry?>(() => AiMacroNotifier());
+
+class AiMacroNotifier extends AsyncNotifier<MealEntry?> {
+  @override
+  FutureOr<MealEntry?> build() => null; // idle
+
+  Future<void> estimate(String description) async {
+    state = const AsyncLoading();
+    state = await AsyncValue.guard(
+      () => ref.read(openAiServiceProvider).estimateMacros(description),
+    );
+  }
+}
+```
+
+The edit screen watches `aiMacroProvider` with `ref.listen(...)` to react to state changes:
+- `AsyncLoading` → disable AI-Fill button, show spinner.
+- `AsyncData(entry)` → call `mealEntryEditProvider.notifier.update(mergedEntry)`, reset
+  `aiMacroProvider` to idle, show a brief success `SnackBar`.
+- `AsyncError` → show error `SnackBar`, reset `aiMacroProvider` to idle.
+
+### Error handling
+
+| Scenario | Behaviour |
+|---|---|
+| Network unreachable | `AsyncError` with connection error message |
+| HTTP 4xx / 5xx | `AsyncError` with status code in message |
+| Response is not valid JSON | `AsyncError` — `FormatException` surfaced |
+| Required macro field missing | Defaults to `0` (matches `MealEntry` constructor) |
+| API rate limit (HTTP 429) | `AsyncError` with "Rate limit exceeded — retry later" |
 
 ---
 

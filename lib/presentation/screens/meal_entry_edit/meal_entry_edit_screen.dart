@@ -278,25 +278,23 @@ class _BasicInfoSection extends ConsumerWidget {
                   (v == null || v.trim().isEmpty) ? 'Required' : null,
               onChanged: (v) => upd(entry.copyWith(text: v)),
             ),
-            // AI-Fill button — only visible when creating a new entry.
-            if (isNew) ...[
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: (isAiLoading || entry.text.trim().isEmpty)
-                    ? null
-                    : () => ref
-                        .read(aiMacroProvider.notifier)
-                        .estimate(entry.text),
-                icon: isAiLoading
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.auto_awesome, size: 18),
-                label: Text(isAiLoading ? 'Calculating…' : 'AI-Fill'),
-              ),
-            ],
+            // AI-Fill button — available for both new and existing entries.
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: (isAiLoading || entry.text.trim().isEmpty)
+                  ? null
+                  : () => ref
+                      .read(aiMacroProvider.notifier)
+                      .estimate(entry.text),
+              icon: isAiLoading
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.auto_awesome, size: 18),
+              label: Text(isAiLoading ? 'Calculating…' : 'AI-Fill'),
+            ),
           ],
         ),
       ),

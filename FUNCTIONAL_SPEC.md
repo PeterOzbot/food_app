@@ -629,13 +629,13 @@ top, and allows navigation to edit any individual entry.
 |---|---|---|
 | Date | `InkWell` wrapping `InputDecorator` + `showDatePicker` | Required |
 | Description | `TextFormField`, multiline, max 3 lines | Required, min 1 char |
-| **AI-Fill** button | `FilledButton.icon` with spinner | **New entry only** |
+| **AI-Fill** button | `FilledButton.icon` with spinner | New and existing entries |
 
 The Date field is an `InkWell` wrapping an `InputDecorator` (not a `TextFormField`) so tapping
 anywhere on the decorated box opens the system date picker while the displayed value stays
 formatted via `DateFormat('d MMMM yyyy')`.
 
-**AI-Fill button** (visible only when `state.isNew == true`):
+**AI-Fill button** (always visible for both new and existing entries):
 
 - Rendered as a `FilledButton.icon` immediately below the Description field.
 - Disabled when the Description field is empty or when an AI call is already in progress.
@@ -871,7 +871,7 @@ Implement in this order to always have a runnable app at each step:
 
 ### Overview
 
-When creating a **new** meal entry, the user can type a meal description (e.g. "200 g grilled chicken breast with 150 g boiled rice") and press **AI-Fill**. The app sends the description to the OpenAI chat completions endpoint using the `gpt-4o-mini` model and receives a JSON object containing estimated values for every nutritional field defined in `MealEntry`. The parsed values are written back into the form via the `mealEntryEditProvider`.
+When creating or editing a meal entry, the user can type a meal description (e.g. "200 g grilled chicken breast with 150 g boiled rice") and press **AI-Fill**. The app sends the description to the OpenAI chat completions endpoint using the `gpt-4o-mini` model and receives a JSON object containing estimated values for every nutritional field defined in `MealEntry`. The parsed values are written back into the form via the `mealEntryEditProvider`.
 
 ### Package additions
 

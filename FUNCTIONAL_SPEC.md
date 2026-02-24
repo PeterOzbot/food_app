@@ -35,15 +35,16 @@ application — `main.dart` and `pubspec.yaml` will both be replaced entirely.
 
 | Package | Version | Purpose |
 |---|---|---|
-| `sqflite` | `^2.4` | SQLite engine (Android / iOS) |
-| `sqflite_common_ffi` | `^2.3` | SQLite on Windows / Linux / macOS desktop |
-| `path` | `^1.9` | Resolve the database file path portably |
-| `flutter_riverpod` | `^2.6` | State management — compile-safe, async-first |
-| `go_router` | `^14.0` | Declarative navigation with deep-link support |
-| `intl` | `^0.20` | Date / number formatting |
-| `equatable` | `^2.0` | Value equality on model classes without boilerplate |
-| `http` | `^1.2` | HTTP client for OpenAI REST API calls |
-| `flutter_dotenv` | `^5.2` | Load `.env` file at startup for secure API key storage |
+| `sqflite` | `^2.4.2` | SQLite engine (Android / iOS) |
+| `sqflite_common_ffi` | `^2.4.0+2` | SQLite on Windows / Linux / macOS desktop |
+| `path` | `^1.9.1` | Resolve the database file path portably |
+| `flutter_riverpod` | `^3.2.1` | State management — compile-safe, async-first |
+| `go_router` | `^17.1.0` | Declarative navigation with deep-link support |
+| `intl` | `^0.20.2` | Date / number formatting |
+| `equatable` | `^2.0.8` | Value equality on model classes without boilerplate |
+| `http` | `^1.6.0` | HTTP client for OpenAI REST API calls |
+| `flutter_dotenv` | `^6.0.0` | Load `.env` file at startup for secure API key storage |
+| `mocktail` | `^1.0.4` | (dev) Mocking library for unit tests |
 
 ### Why Riverpod over BLoC or Provider?
 
@@ -89,7 +90,8 @@ lib/
 │   │   ├── app_database.dart              ← opens SQLite, runs migrations
 │   │   └── migrations/
 │   │       ├── app_migration.dart         ← abstract Migration base class
-│   │       └── v1_create_meal_entries.dart
+│   │       ├── v1_create_meal_entries.dart
+│   │       └── v2_create_ai_logs.dart     ← ai_logs table for API tracking
 │   ├── router/
 │   │   └── app_router.dart               ← GoRouter route definitions
 │   └── services/
@@ -97,10 +99,13 @@ lib/
 │
 ├── data/
 │   ├── models/
-│   │   └── meal_entry_model.dart          ← fromMap / toMap / copyWith
+│   │   ├── meal_entry_model.dart          ← fromMap / toMap / copyWith / fromAiJson
+│   │   └── ai_log_model.dart              ← OpenAI API call audit logging
 │   └── repositories/
 │       ├── meal_entry_repository.dart     ← abstract interface
-│       └── sqlite_meal_entry_repository.dart
+│       ├── sqlite_meal_entry_repository.dart
+│       ├── ai_log_repository.dart         ← abstract interface for AI logs
+│       └── sqlite_ai_log_repository.dart
 │
 ├── domain/
 │   └── entities/
@@ -113,7 +118,7 @@ lib/
     │   ├── meal_list_provider.dart        ← AsyncNotifier<List<DaySummary>>
     │   ├── day_detail_provider.dart       ← AsyncNotifier<List<MealEntry>>
     │   ├── meal_entry_edit_provider.dart  ← Notifier<MealEntryEditState>
-    │   └── ai_macro_provider.dart        ← AsyncNotifier driving the AI-Fill call
+    │   └── ai_macro_provider.dart         ← AsyncNotifier<AiMacroResult?> + service providers
     └── screens/
         ├── meal_list/
         │   ├── meal_list_screen.dart
@@ -126,8 +131,9 @@ lib/
         └── meal_entry_edit/
             ├── meal_entry_edit_screen.dart
             └── widgets/
-                ├── nutrient_section.dart  ← labelled collapsible ExpansionTile section
-                └── nutrient_field.dart    ← labelled numeric TextFormField
+                ├── nutrient_section.dart       ← labelled collapsible ExpansionTile section
+                ├── nutrient_field.dart         ← labelled numeric TextFormField (StatefulWidget)
+                └── ai_result_bottom_sheet.dart ← AI-Fill confidence/notes confirmation
 ```
 
 ### Architectural constraints
@@ -240,26 +246,41 @@ class MealEntry extends Equatable {
 // lib/domain/entities/day_summary.dart
 
 class DaySummary extends Equatable {
-  final DateTime date;
-  final int      entryCount;
-  final double   totalCalories;
-  final double   totalProtein;
-  final double   totalFat;
-  final double   totalCarbohydrates;
+  const DaySummary({
+    required this.date,
+    required this.entryCount,
+    required this.totalCalories,
+    required this.totalProtein,
+    required this.totalFat,
+    required this.totalCarbohydrates,
+    this.entryTexts = const [],
+  });
 
-  // Built from List<MealEntry> inside the repository layer, not in the UI.
-  factory DaySummary.fromEntries(DateTime date, List<MealEntry> entries) {
-    return DaySummary(
-      date:               date,
-      entryCount:         entries.length,
-      totalCalories:      entries.fold(0, (s, e) => s + e.calories),
-      totalProtein:       entries.fold(0, (s, e) => s + e.protein),
-      totalFat:           entries.fold(0, (s, e) => s + e.totalFat),
-      totalCarbohydrates: entries.fold(0, (s, e) => s + e.carbohydrates),
-    );
-  }
+  final DateTime date;
+  final int entryCount;
+  final double totalCalories;
+  final double totalProtein;
+  final double totalFat;
+  final double totalCarbohydrates;
+
+  /// Descriptions/texts from all meal entries for this day, ordered by entry id.
+  final List<String> entryTexts;
+
+  @override
+  List<Object?> get props => [
+        date,
+        entryCount,
+        totalCalories,
+        totalProtein,
+        totalFat,
+        totalCarbohydrates,
+        entryTexts,
+      ];
 }
 ```
+
+The repository layer builds `DaySummary` objects from SQL queries, aggregating
+nutritional totals and collecting entry descriptions for display in the list screen.
 
 ### 4d. AiLog entity
 
@@ -558,7 +579,7 @@ summarising macronutrients.
 
 | Zone | Widget | Detail |
 |---|---|---|
-| AppBar | `AppBar` | Title: "Food Tracker". No leading. |
+| AppBar | `AppBar` | Title: "Food App". No leading. |
 | Body — empty | `Center` + `Column` | Fork icon + "No meals recorded yet.\nTap + to add your first entry." |
 | Body — populated | `ListView.builder` | One `DaySummaryTile` per day, sorted descending (newest first). |
 | FAB | `FloatingActionButton` | "+" icon. Navigates to `/meal/new`. |
@@ -566,16 +587,18 @@ summarising macronutrients.
 **DaySummaryTile layout:**
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  Mon          🔥 2,100 kcal   🥩 85 g protein                   │
-│  23 Feb       🥑 70 g fat     🌾 250 g carbs    [ Edit ]         │
-│  3 entries                                                       │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│  Mon   🔥 2,100 kcal   🥩 85 g protein   • Chicken breast...    [ Edit ]       │
+│  23    🥑 70 g fat     🌾 250 g carbs    • Oatmeal with...                     │
+│  Feb                                      • +1 more                            │
+│  3 entries                                                                     │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Left column: large day-of-week + "DD MMM" date; small entry count subtitle.
-- Centre block: 2 × 2 macro grid with icons and formatted values.
-- Right: `OutlinedButton("Edit")` → navigates to `/day/:date`.
+- Left column: day-of-week (EEE) + large date (d) + month (MMM); small entry count subtitle.
+- Centre block: 2 × 2 macro grid with emojis and formatted values.
+- Right section: bullet list of entry descriptions (max 3 visible, "+N more" if overflow).
+- Far right: `OutlinedButton("Edit")` → navigates to `/day/:date`.
 
 ---
 
@@ -698,8 +721,12 @@ Zinc (mg), Copper (mg), Manganese (mg), Selenium (µg).
 ```dart
 // lib/presentation/screens/meal_entry_edit/widgets/nutrient_field.dart
 
-class NutrientField extends StatelessWidget {
+/// A StatefulWidget that wraps TextFormField with a TextEditingController.
+/// Using a StatefulWidget ensures that when initialValue changes (e.g. after
+/// AI-Fill), the displayed text updates immediately.
+class NutrientField extends StatefulWidget {
   const NutrientField({
+    super.key,
     required this.label,
     required this.unit,        // suffix text, e.g. "g", "mg", "kcal"
     required this.initialValue,
@@ -714,6 +741,39 @@ class NutrientField extends StatelessWidget {
   final ValueChanged<double?> onChanged;
   final bool required;
   final bool readOnly;
+}
+
+class _NutrientFieldState extends State<NutrientField> {
+  late TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: _formatValue(widget.initialValue));
+  }
+
+  @override
+  void didUpdateWidget(covariant NutrientField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // When initialValue changes externally (e.g. AI-Fill), update controller.
+    // Use addPostFrameCallback to avoid setState during build.
+    if (oldWidget.initialValue != widget.initialValue) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _controller.text = _formatValue(widget.initialValue);
+        }
+      });
+    }
+  }
+
+  String _formatValue(double? value) =>
+      value == null ? '' : value.toStringAsFixed(2);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 }
 ```
 
@@ -758,16 +818,39 @@ ProviderScope
 
 ```dart
 class MealEntryEditState {
+  MealEntryEditState({
+    this.original,
+    required this.entry,
+    this.isInitializing = true,
+    this.isSaving = false,
+    this.saveError,
+  });
+
   final MealEntry? original; // null when creating a new entry
   final MealEntry entry;     // current form values
+  final bool isInitializing; // true until init() completes
   final bool isSaving;       // true while the DB write is in progress
   final String? saveError;   // non-null if last save failed
 
   // Computed getters
   bool get isDirty => entry != original;  // uses Equatable equality
   bool get isNew   => original == null;
+
+  MealEntryEditState copyWith({
+    MealEntry? entry,
+    bool? isInitializing,
+    bool? isSaving,
+    String? saveError,
+  });
 }
 ```
+
+The `isInitializing` field is `true` by default and set to `false` once `init()` completes.
+The screen shows a loading spinner while `isInitializing` is true, preventing a brief flash
+of stale or default values when navigating to the edit screen.
+
+The provider uses `NotifierProvider.autoDispose` to ensure the provider is disposed when the
+screen is removed from the widget tree, preventing stale state on the next navigation.
 
 The edit screen calls `ref.read(mealEntryEditProvider.notifier).update(updatedEntry)` whenever
 date or description changes. `save()` calls the repository, returns `true` on success (the screen
@@ -811,7 +894,7 @@ This triggers an automatic async refresh of both the list and detail screens.
 
 ## 9. Repository Layer
 
-### Abstract interface
+### MealEntryRepository interface
 
 ```dart
 // lib/data/repositories/meal_entry_repository.dart
@@ -833,6 +916,28 @@ abstract class MealEntryRepository {
   Future<void> delete(int id);
 }
 ```
+
+### AiLogRepository interface
+
+```dart
+// lib/data/repositories/ai_log_repository.dart
+
+/// Abstract interface for all AI-log persistence operations.
+/// The presentation layer depends only on this contract, never on SQLite directly.
+abstract class AiLogRepository {
+  /// Persists a new log entry and returns the saved copy with its assigned [id].
+  Future<AiLog> insert(AiLog log);
+
+  /// Returns all log entries, most-recent first.
+  Future<List<AiLog>> getAll();
+
+  /// Returns the most recent [limit] log entries, most-recent first.
+  Future<List<AiLog>> getRecent(int limit);
+}
+```
+
+The `AiLogRepository` is used by `OpenAiService` to automatically log every API call
+(success and failure) for audit and debugging purposes.
 
 ### SQLite implementation notes
 
@@ -1023,61 +1128,130 @@ The JSON keys are camelCase and match the Dart field names exactly, so `MealEntr
 | `cholesterol` | `cholesterol` | `double?` | mg | optional |
 | `water` | `water` | `double?` | ml | optional |
 | `meal_description` | *(not mapped)* | `String` | — | logged only |
-| `note` | *(not mapped)* | `String` | — | logged only |
-| `confidence` | *(not mapped)* | `String` | — | logged only |
+| `note` | `AiMacroResult.note` | `String?` | — | shown in bottom sheet |
+| `confidence` | `AiMacroResult.confidence` | `String` | — | shown in bottom sheet |
+
+### `AiMacroResult` wrapper class
+
+```dart
+// lib/core/services/openai_service.dart
+
+/// Bundles the AI-estimated [MealEntry] with the confidence level and any
+/// assumptions the model made during nutritional estimation.
+class AiMacroResult {
+  const AiMacroResult({
+    required this.entry,
+    required this.confidence,
+    this.note,
+  });
+
+  /// Nutritional stub returned by the AI (date and text are placeholders).
+  final MealEntry entry;
+
+  /// AI self-assessment: `'high'`, `'medium'`, or `'low'`.
+  final String confidence;
+
+  /// Optional explanation of assumptions (e.g. estimated portion sizes).
+  final String? note;
+}
+```
+
+The `confidence` and `note` fields are displayed in the AI-Fill Result bottom sheet before
+the user applies the estimated values to the form.
 
 ### `OpenAiService` — `lib/core/services/openai_service.dart`
 
 ```dart
+/// Thrown when the OpenAI API call fails for any reason.
+class OpenAiException implements Exception {
+  const OpenAiException(this.message);
+  final String message;
+}
+
 class OpenAiService {
-  static const _endpoint =
-      'https://api.openai.com/v1/chat/completions';
+  static const _endpoint = 'https://api.openai.com/v1/chat/completions';
   static const _model = 'gpt-4o-mini';
 
   final String _apiKey;
-  OpenAiService(this._apiKey);
+  final AiLogRepository _aiLogRepo;
 
-  /// Returns a [MealEntry] stub with all nutritional fields populated.
+  /// Constructor requires the API key and an [AiLogRepository] for automatic
+  /// logging of all API calls (both success and failure).
+  OpenAiService(this._apiKey, this._aiLogRepo);
+
+  /// Returns an [AiMacroResult] containing a [MealEntry] stub with all nutritional
+  /// fields populated, plus the AI's confidence level and any notes.
   /// Throws [OpenAiException] on network error, non-200 status, or bad JSON.
-  Future<MealEntry> estimateMacros(String description) async { ... }
+  /// Automatically logs the request and response to the database via [_aiLogRepo].
+  Future<AiMacroResult> estimateMacros(String description) async { ... }
 }
 ```
 
 The method:
 1. POSTs the system + user messages to `_endpoint`.
 2. Parses `response.choices[0].message.content` as JSON.
-3. Calls `MealEntry.fromMap(json)` (or a dedicated `MealEntry.fromAiJson(json)`) to build
-   a stub entry (no `id`, no `date`, no `description` — those come from the form).
-4. Returns the stub; the caller merges it into the current `MealEntryEditState.entry` via
-   `entry.copyWith(...)`.
+3. Extracts `confidence` and `note` from the JSON for the result wrapper.
+4. Calls `MealEntry.fromAiJson(json)` to build a stub entry (no `id`, date is placeholder,
+   text is placeholder — those come from the form).
+5. Logs the request and response to the database via `_aiLogRepo.insert(...)`.
+6. Returns `AiMacroResult(entry: stub, confidence: ..., note: ...)`.
+7. The caller merges `result.entry` into the current `MealEntryEditState.entry` via
+   `entry.copyWith(id: current.id, date: current.date, text: current.text, ...)`.
 
 ### `aiMacroProvider` — `lib/presentation/providers/ai_macro_provider.dart`
 
 ```dart
-// State: AsyncValue<MealEntry?> — null = idle, data = result, error = failure
-final aiMacroProvider =
-    AsyncNotifierProvider<AiMacroNotifier, MealEntry?>(() => AiMacroNotifier());
+/// Provides the [AiLogRepository] backed by the open SQLite database.
+final aiLogRepositoryProvider = Provider<AiLogRepository>((ref) {
+  final dbAsync = ref.watch(databaseProvider);
+  return dbAsync.when(
+    data: (db) => SqliteAiLogRepository(db),
+    loading: () => throw StateError('Database is not ready yet'),
+    error: (e, _) => throw StateError('Database error: $e'),
+  );
+});
 
-class AiMacroNotifier extends AsyncNotifier<MealEntry?> {
+/// Provides the [OpenAiService] singleton, reading the API key from .env
+/// and injecting [AiLogRepository] for automatic persistence of API calls.
+final openAiServiceProvider = Provider<OpenAiService>((ref) {
+  final apiKey = dotenv.env['OPENAI_API_KEY'] ?? '';
+  final aiLogRepo = ref.watch(aiLogRepositoryProvider);
+  return OpenAiService(apiKey, aiLogRepo);
+});
+
+/// State: AsyncValue<AiMacroResult?>
+///   - AsyncData(null)   — idle (initial and after reset)
+///   - AsyncLoading()    — API call in progress
+///   - AsyncData(result) — success; result holds entry + confidence + note
+///   - AsyncError(...)   — call failed; message surfaced to the UI
+class AiMacroNotifier extends AsyncNotifier<AiMacroResult?> {
   @override
-  FutureOr<MealEntry?> build() => null; // idle
+  FutureOr<AiMacroResult?> build() => null; // idle
 
+  /// Sends [description] to OpenAI and populates the state with the result.
   Future<void> estimate(String description) async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(
       () => ref.read(openAiServiceProvider).estimateMacros(description),
     );
   }
+
+  /// Resets back to idle after the UI has consumed the result or error.
+  void reset() => state = const AsyncData(null);
 }
+
+final aiMacroProvider =
+    AsyncNotifierProvider<AiMacroNotifier, AiMacroResult?>(AiMacroNotifier.new);
 ```
 
 The edit screen watches `aiMacroProvider` with `ref.listen(...)` to react to state changes:
 - `AsyncLoading` → disable AI-Fill button, show spinner.
-- `AsyncData(entry)` → call `showModalBottomSheet(...)` to present the **AI-Fill Result
-  bottom sheet** (confidence level + notes). Only after the user taps **Apply** does the
-  sheet close and call `mealEntryEditProvider.notifier.update(mergedEntry)` followed by
-  `aiMacroProvider` reset to idle.
-- `AsyncError` → show error `SnackBar`, reset `aiMacroProvider` to idle.
+- `AsyncData(result)` where `result != null` → call `showModalBottomSheet(...)` to present
+  the **AI-Fill Result bottom sheet** (confidence level + notes from `result.confidence`
+  and `result.note`). Only after the user taps **Apply** does the sheet close and call
+  `mealEntryEditProvider.notifier.update(mergedEntry)` with `result.entry`, followed by
+  `aiMacroProvider.reset()` to return to idle.
+- `AsyncError` → show error `SnackBar`, call `aiMacroProvider.reset()` to return to idle.
 
 ### Error handling
 

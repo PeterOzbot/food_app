@@ -8,12 +8,14 @@ class MealEntryEditState {
   MealEntryEditState({
     this.original,
     required this.entry,
+    this.isInitializing = true,
     this.isSaving = false,
     this.saveError,
   });
 
   final MealEntry? original; // null when creating a new entry
   final MealEntry entry;
+  final bool isInitializing; // true until init() completes
   final bool isSaving;
   final String? saveError;
 
@@ -22,12 +24,14 @@ class MealEntryEditState {
 
   MealEntryEditState copyWith({
     MealEntry? entry,
+    bool? isInitializing,
     bool? isSaving,
     String? saveError,
   }) =>
       MealEntryEditState(
         original: original,
         entry: entry ?? this.entry,
+        isInitializing: isInitializing ?? this.isInitializing,
         isSaving: isSaving ?? this.isSaving,
         saveError: saveError,
       );
@@ -54,7 +58,11 @@ class MealEntryEditNotifier extends Notifier<MealEntryEditState> {
   /// Call once when the screen opens.
   void init({MealEntry? existing, DateTime? date}) {
     if (existing != null) {
-      state = MealEntryEditState(original: existing, entry: existing);
+      state = MealEntryEditState(
+        original: existing,
+        entry: existing,
+        isInitializing: false,
+      );
     } else {
       final newEntry = MealEntry(
         date: date ?? DateTime.now(),
@@ -66,7 +74,7 @@ class MealEntryEditNotifier extends Notifier<MealEntryEditState> {
         dietaryFiber: 0,
         sugars: 0,
       );
-      state = MealEntryEditState(entry: newEntry);
+      state = MealEntryEditState(entry: newEntry, isInitializing: false);
     }
   }
 
@@ -92,7 +100,7 @@ class MealEntryEditNotifier extends Notifier<MealEntryEditState> {
 }
 
 final mealEntryEditProvider =
-    NotifierProvider<MealEntryEditNotifier, MealEntryEditState>(
+    NotifierProvider.autoDispose<MealEntryEditNotifier, MealEntryEditState>(
   MealEntryEditNotifier.new,
 );
 

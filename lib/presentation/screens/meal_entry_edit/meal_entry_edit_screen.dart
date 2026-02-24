@@ -54,6 +54,15 @@ class _MealEntryEditScreenState extends ConsumerState<MealEntryEditScreen> {
   @override
   Widget build(BuildContext context) {
     final editState = ref.watch(mealEntryEditProvider);
+
+    // Show loading indicator while init() hasn't run yet.
+    // This prevents a brief flash of stale/default values.
+    if (editState.isInitializing) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     final entry = editState.entry;
     final isNew = editState.isNew;
 
@@ -220,13 +229,46 @@ class _MealEntryEditScreenState extends ConsumerState<MealEntryEditScreen> {
 
 // ── Basic Info Section ───────────────────────────────────────────────────────
 
-class _BasicInfoSection extends ConsumerWidget {
+class _BasicInfoSection extends ConsumerStatefulWidget {
   const _BasicInfoSection({required this.entry, required this.isNew});
   final MealEntry entry;
   final bool isNew;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_BasicInfoSection> createState() => _BasicInfoSectionState();
+}
+
+class _BasicInfoSectionState extends ConsumerState<_BasicInfoSection> {
+  late TextEditingController _descriptionController;
+
+  @override
+  void initState() {
+    super.initState();
+    _descriptionController = TextEditingController(text: widget.entry.text);
+  }
+
+  @override
+  void didUpdateWidget(_BasicInfoSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Sync controller when the provider's entry.text changes (e.g. after init()
+    // runs in a post-frame callback). This mirrors the NutrientField fix.
+    if (oldWidget.entry.text != widget.entry.text) {
+      if (_descriptionController.text != widget.entry.text) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _descriptionController.text = widget.entry.text;
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     void upd(MealEntry updated) =>
         ref.read(mealEntryEditProvider.notifier).update(updated);
 
@@ -247,12 +289,12 @@ class _BasicInfoSection extends ConsumerWidget {
               onTap: () async {
                 final picked = await showDatePicker(
                   context: context,
-                  initialDate: entry.date,
+                  initialDate: widget.entry.date,
                   firstDate: DateTime(2000),
                   lastDate: DateTime(2100),
                 );
                 if (picked != null) {
-                  upd(entry.copyWith(date: picked));
+                  upd(widget.entry.copyWith(date: picked));
                 }
               },
               child: InputDecorator(
@@ -262,12 +304,12 @@ class _BasicInfoSection extends ConsumerWidget {
                   isDense: true,
                   suffixIcon: Icon(Icons.calendar_today),
                 ),
-                child: Text(DateFormat('d MMMM yyyy').format(entry.date)),
+                child: Text(DateFormat('d MMMM yyyy').format(widget.entry.date)),
               ),
             ),
             const SizedBox(height: 12),
             TextFormField(
-              initialValue: entry.text,
+              controller: _descriptionController,
               decoration: const InputDecoration(
                 labelText: 'Description',
                 border: OutlineInputBorder(),
@@ -276,16 +318,16 @@ class _BasicInfoSection extends ConsumerWidget {
               maxLines: 3,
               validator: (v) =>
                   (v == null || v.trim().isEmpty) ? 'Required' : null,
-              onChanged: (v) => upd(entry.copyWith(text: v)),
+              onChanged: (v) => upd(widget.entry.copyWith(text: v)),
             ),
             // AI-Fill button — available for both new and existing entries.
             const SizedBox(height: 12),
             FilledButton.icon(
-              onPressed: (isAiLoading || entry.text.trim().isEmpty)
+              onPressed: (isAiLoading || widget.entry.text.trim().isEmpty)
                   ? null
                   : () => ref
                       .read(aiMacroProvider.notifier)
-                      .estimate(entry.text),
+                      .estimate(widget.entry.text),
               icon: isAiLoading
                   ? const SizedBox(
                       width: 16,

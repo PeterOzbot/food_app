@@ -13,6 +13,9 @@ class DaySummaryTile extends StatelessWidget {
   final DaySummary summary;
   final VoidCallback onEdit;
 
+  /// Maximum number of entry descriptions to show before truncating.
+  static const _maxVisibleEntries = 3;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -23,6 +26,7 @@ class DaySummaryTile extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ── Date column ──────────────────────────────────────────
             SizedBox(
@@ -55,44 +59,53 @@ class DaySummaryTile extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             // ── Macro grid ───────────────────────────────────────────
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      _MacroChip(
-                        emoji: '🔥',
-                        value: summary.totalCalories,
-                        unit: 'kcal',
-                      ),
-                      const SizedBox(width: 8),
-                      _MacroChip(
-                        emoji: '🥩',
-                        value: summary.totalProtein,
-                        unit: 'g protein',
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      _MacroChip(
-                        emoji: '🥑',
-                        value: summary.totalFat,
-                        unit: 'g fat',
-                      ),
-                      const SizedBox(width: 8),
-                      _MacroChip(
-                        emoji: '🌾',
-                        value: summary.totalCarbohydrates,
-                        unit: 'g carbs',
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    _MacroChip(
+                      emoji: '🔥',
+                      value: summary.totalCalories,
+                      unit: 'kcal',
+                    ),
+                    const SizedBox(width: 8),
+                    _MacroChip(
+                      emoji: '🥩',
+                      value: summary.totalProtein,
+                      unit: 'g protein',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    _MacroChip(
+                      emoji: '🥑',
+                      value: summary.totalFat,
+                      unit: 'g fat',
+                    ),
+                    const SizedBox(width: 8),
+                    _MacroChip(
+                      emoji: '🌾',
+                      value: summary.totalCarbohydrates,
+                      unit: 'g carbs',
+                    ),
+                  ],
+                ),
+              ],
             ),
+            const SizedBox(width: 16),
+            // ── Entry descriptions ───────────────────────────────────
+            Expanded(
+              child: summary.entryTexts.isNotEmpty
+                  ? _EntryTextsList(
+                      texts: summary.entryTexts,
+                      maxVisible: _maxVisibleEntries,
+                    )
+                  : const SizedBox.shrink(),
+            ),
+            const SizedBox(width: 8),
             // ── Edit button ──────────────────────────────────────────
             OutlinedButton(
               onPressed: onEdit,
@@ -101,6 +114,66 @@ class DaySummaryTile extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Displays a list of entry descriptions with overflow handling.
+/// Shows up to [maxVisible] entries, then a "+N more" indicator.
+class _EntryTextsList extends StatelessWidget {
+  const _EntryTextsList({
+    required this.texts,
+    required this.maxVisible,
+  });
+
+  final List<String> texts;
+  final int maxVisible;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    final visibleTexts = texts.take(maxVisible).toList();
+    final remaining = texts.length - maxVisible;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final text in visibleTexts)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 2),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '• ',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.outline,
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    text,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (remaining > 0)
+          Text(
+            '+$remaining more',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: colorScheme.outline,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+      ],
     );
   }
 }

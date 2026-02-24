@@ -135,14 +135,29 @@ class _MealEntryEditScreenState extends ConsumerState<MealEntryEditScreen> {
 
   Future<void> _save(BuildContext context) async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    final editState = ref.read(mealEntryEditProvider);
     final success = await ref.read(mealEntryEditProvider.notifier).save();
     if (success && context.mounted) {
-      // Invalidate both list and day-detail so they refresh on pop.
+      // Invalidate meal list so it refreshes on pop.
       ref.invalidate(mealListProvider);
-      final date = ref.read(mealEntryEditProvider).entry.date;
+
+      // Invalidate the new date's day-detail provider.
+      final newDate = editState.entry.date;
       ref.invalidate(dayDetailProvider(
-        DateTime(date.year, date.month, date.day),
+        DateTime(newDate.year, newDate.month, newDate.day),
       ));
+
+      // If editing an existing entry and the date changed, also invalidate
+      // the original date's day-detail provider so it no longer shows the entry.
+      final originalDate = editState.original?.date;
+      if (originalDate != null) {
+        final origDay = DateTime(originalDate.year, originalDate.month, originalDate.day);
+        final newDay = DateTime(newDate.year, newDate.month, newDate.day);
+        if (origDay != newDay) {
+          ref.invalidate(dayDetailProvider(origDay));
+        }
+      }
+
       Navigator.of(context).pop();
     }
   }
@@ -186,8 +201,13 @@ class _MealEntryEditScreenState extends ConsumerState<MealEntryEditScreen> {
 
     if (applied == true && mounted) {
       final current = ref.read(mealEntryEditProvider).entry;
-      final merged =
-          aiResult.entry.copyWith(date: current.date, text: current.text);
+      // Preserve id, date, and text from current entry when merging AI results.
+      // Without id, save() would treat this as a new entry (INSERT instead of UPDATE).
+      final merged = aiResult.entry.copyWith(
+        id: current.id,
+        date: current.date,
+        text: current.text,
+      );
       ref.read(mealEntryEditProvider.notifier).update(merged);
       ref.read(aiMacroProvider.notifier).reset();
     }

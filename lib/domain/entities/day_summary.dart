@@ -10,6 +10,7 @@ class DaySummary extends Equatable {
     required this.totalProtein,
     required this.totalFat,
     required this.totalCarbohydrates,
+    this.entryTexts = const [],
   });
 
   final DateTime date;
@@ -19,6 +20,9 @@ class DaySummary extends Equatable {
   final double totalFat;
   final double totalCarbohydrates;
 
+  /// Descriptions/texts from all meal entries for this day, ordered by entry id.
+  final List<String> entryTexts;
+
   @override
   List<Object?> get props => [
         date,
@@ -27,6 +31,7 @@ class DaySummary extends Equatable {
         totalProtein,
         totalFat,
         totalCarbohydrates,
+        entryTexts,
       ];
 }
 

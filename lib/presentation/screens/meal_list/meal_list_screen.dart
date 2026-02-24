@@ -15,7 +15,7 @@ class MealListScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Food Tracker'),
+        title: const Text('Food App'),
         centerTitle: false,
       ),
       floatingActionButton: FloatingActionButton(

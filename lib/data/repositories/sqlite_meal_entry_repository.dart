@@ -14,7 +14,8 @@ class SqliteMealEntryRepository implements MealEntryRepository {
 
   @override
   Future<List<DaySummary>> getDaySummaries() async {
-    final rows = await _db.rawQuery('''
+    // Fetch aggregated totals per day.
+    final summaryRows = await _db.rawQuery('''
       SELECT
         date(date)          AS day,
         COUNT(*)            AS entry_count,
@@ -27,7 +28,22 @@ class SqliteMealEntryRepository implements MealEntryRepository {
       ORDER BY day DESC
     ''');
 
-    return rows.map((r) {
+    // Fetch all entry texts grouped by day (ordered by id within each day).
+    final textRows = await _db.rawQuery('''
+      SELECT date(date) AS day, text
+      FROM $_table
+      ORDER BY date(date) DESC, id ASC
+    ''');
+
+    // Build a map: day → list of texts.
+    final textsPerDay = <String, List<String>>{};
+    for (final row in textRows) {
+      final day = row['day'] as String;
+      final text = row['text'] as String? ?? '';
+      textsPerDay.putIfAbsent(day, () => []).add(text);
+    }
+
+    return summaryRows.map((r) {
       final dayStr = r['day'] as String;
       return DaySummary(
         date: DateTime.parse(dayStr),
@@ -36,6 +52,7 @@ class SqliteMealEntryRepository implements MealEntryRepository {
         totalProtein: (r['total_protein'] as num?)?.toDouble() ?? 0,
         totalFat: (r['total_fat'] as num?)?.toDouble() ?? 0,
         totalCarbohydrates: (r['total_carbohydrates'] as num?)?.toDouble() ?? 0,
+        entryTexts: textsPerDay[dayStr] ?? [],
       );
     }).toList();
   }

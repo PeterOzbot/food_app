@@ -27,7 +27,7 @@ class App extends ConsumerWidget {
         ),
       ),
       data: (_) => MaterialApp.router(
-        title: 'Food Tracker',
+        title: 'Food App',
         routerConfig: appRouter,
         theme: ThemeData(
           useMaterial3: true,

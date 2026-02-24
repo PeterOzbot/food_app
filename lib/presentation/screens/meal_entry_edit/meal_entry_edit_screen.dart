@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import '../../../core/services/openai_service.dart';
 import '../../../data/models/meal_entry_model.dart';
 import '../../providers/ai_macro_provider.dart';
 import '../../providers/day_detail_provider.dart';
 import '../../providers/meal_entry_edit_provider.dart';
 import '../../providers/meal_list_provider.dart';
+import 'widgets/ai_result_bottom_sheet.dart';
 import 'widgets/nutrient_field.dart';
 import 'widgets/nutrient_section.dart';
 
@@ -56,18 +58,12 @@ class _MealEntryEditScreenState extends ConsumerState<MealEntryEditScreen> {
     final isNew = editState.isNew;
 
     // React to AI-Fill completion and errors.
-    ref.listen<AsyncValue<MealEntry?>>(aiMacroProvider, (_, next) {
+    ref.listen<AsyncValue<AiMacroResult?>>(aiMacroProvider, (_, next) {
       next.whenOrNull(
-        data: (aiEntry) {
-          if (aiEntry == null) return; // idle — nothing to do
-          // Merge AI nutrients with the form's current date and description.
-          final current = ref.read(mealEntryEditProvider).entry;
-          final merged = aiEntry.copyWith(date: current.date, text: current.text);
-          ref.read(mealEntryEditProvider.notifier).update(merged);
-          ref.read(aiMacroProvider.notifier).reset();
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Nutrients filled by AI ✓')),
-          );
+        data: (aiResult) {
+          if (aiResult == null) return; // idle — nothing to do
+          // Show result bottom sheet before updating any form fields.
+          _showAiFillResultSheet(context, aiResult);
         },
         error: (error, _) {
           ref.read(aiMacroProvider.notifier).reset();
@@ -161,6 +157,31 @@ class _MealEntryEditScreenState extends ConsumerState<MealEntryEditScreen> {
       ),
     );
     return result ?? false;
+  }
+
+  /// Shows the AI-Fill Result bottom sheet and, if the user taps Apply,
+  /// merges the AI entry into the form and resets the provider.
+  Future<void> _showAiFillResultSheet(
+    BuildContext context,
+    AiMacroResult aiResult,
+  ) async {
+    final applied = await showModalBottomSheet<bool>(
+      context: context,
+      isDismissible: false,
+      enableDrag: false,
+      builder: (_) => AiResultBottomSheet(
+        confidence: aiResult.confidence,
+        note: aiResult.note,
+      ),
+    );
+
+    if (applied == true && mounted) {
+      final current = ref.read(mealEntryEditProvider).entry;
+      final merged =
+          aiResult.entry.copyWith(date: current.date, text: current.text);
+      ref.read(mealEntryEditProvider.notifier).update(merged);
+      ref.read(aiMacroProvider.notifier).reset();
+    }
   }
 
   List<Widget> _vitaminFields(MealEntry e) {

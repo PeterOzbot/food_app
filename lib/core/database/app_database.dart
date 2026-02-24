@@ -3,6 +3,7 @@ import 'package:sqflite/sqflite.dart';
 
 import 'migrations/app_migration.dart';
 import 'migrations/v1_create_meal_entries.dart';
+import 'migrations/v2_create_ai_logs.dart';
 
 /// Opens the SQLite database and applies pending migrations automatically.
 ///
@@ -10,11 +11,12 @@ import 'migrations/v1_create_meal_entries.dart';
 /// order, then bump [_currentVersion] to match the highest toVersion.
 class AppDatabase {
   static const _dbName = 'food_app.db';
-  static const _currentVersion = 1;
+  static const _currentVersion = 2;
 
   static final List<AppMigration> _migrations = [
     V1CreateMealEntries(),
-    // V2SomeChange(),  ← append future migrations here
+    V2CreateAiLogs(),
+    // V3SomeChange(),  ← append future migrations here
   ];
 
   Future<Database> open() async {

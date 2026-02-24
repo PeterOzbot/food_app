@@ -261,6 +261,80 @@ class DaySummary extends Equatable {
 }
 ```
 
+### 4d. AiLog entity
+
+Tracks every OpenAI API interaction for audit, debugging, and future analytics.
+
+```dart
+// lib/data/models/ai_log_model.dart
+
+class AiLog extends Equatable {
+  final int?     id;           // null before first persist
+  final DateTime timestamp;    // when the request was sent
+  final String   request;      // meal description submitted to the API
+  final String   response;     // raw JSON string returned by the API (empty on failure)
+  final bool     success;      // true if HTTP 200 and valid JSON received
+  final String?  errorMessage; // populated only when success == false
+
+  const AiLog({
+    this.id,
+    required this.timestamp,
+    required this.request,
+    required this.response,
+    required this.success,
+    this.errorMessage,
+  });
+
+  factory AiLog.fromMap(Map<String, dynamic> m) => AiLog(
+    id:           m['id'] as int?,
+    timestamp:    DateTime.parse(m['timestamp'] as String),
+    request:      m['request'] as String,
+    response:     m['response'] as String,
+    success:      (m['success'] as int) == 1,
+    errorMessage: m['error_message'] as String?,
+  );
+
+  Map<String, dynamic> toMap() => {
+    if (id != null) 'id': id,
+    'timestamp':     timestamp.toIso8601String(),
+    'request':       request,
+    'response':      response,
+    'success':       success ? 1 : 0,
+    'error_message': errorMessage,
+  };
+
+  AiLog copyWith({
+    int? id,
+    DateTime? timestamp,
+    String? request,
+    String? response,
+    bool? success,
+    String? errorMessage,
+  }) => AiLog(
+    id:           id           ?? this.id,
+    timestamp:    timestamp    ?? this.timestamp,
+    request:      request      ?? this.request,
+    response:     response     ?? this.response,
+    success:      success      ?? this.success,
+    errorMessage: errorMessage ?? this.errorMessage,
+  );
+
+  @override
+  List<Object?> get props => [id, timestamp, request, response, success, errorMessage];
+}
+```
+
+### 4e. AiLog SQLite type mapping
+
+| Dart field | SQLite column | Type | Notes |
+|---|---|---|---|
+| `int? id` | `id` | `INTEGER PRIMARY KEY AUTOINCREMENT` | `null` before insert |
+| `DateTime timestamp` | `timestamp` | `TEXT NOT NULL` | ISO 8601: `"2024-02-23T14:05:00.000"` |
+| `String request` | `request` | `TEXT NOT NULL` | Meal description sent to OpenAI |
+| `String response` | `response` | `TEXT NOT NULL` | Raw JSON content from API; empty string on failure |
+| `bool success` | `success` | `INTEGER NOT NULL` | `1` = true, `0` = false |
+| `String? errorMessage` | `error_message` | `TEXT` | SQL `NULL` when call succeeded |
+
 ---
 
 ## 5. Database Schema & Migration System
@@ -350,19 +424,50 @@ class V1CreateMealEntries extends AppMigration {
 }
 ```
 
-### 5c. Migration runner (AppDatabase)
+### 5c. Version 2 — ai_logs table
+
+```dart
+// lib/core/database/migrations/v2_create_ai_logs.dart
+
+class V2CreateAiLogs extends AppMigration {
+  @override int get toVersion => 2;
+  @override String get description => 'Create ai_logs table';
+
+  @override
+  Future<void> up(Database db) async {
+    await db.execute('''
+      CREATE TABLE ai_logs (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp     TEXT    NOT NULL,
+        request       TEXT    NOT NULL,
+        response      TEXT    NOT NULL,
+        success       INTEGER NOT NULL,
+        error_message TEXT
+      )
+    ''');
+  }
+
+  @override
+  Future<void> down(Database db) async {
+    await db.execute('DROP TABLE IF EXISTS ai_logs');
+  }
+}
+```
+
+### 5d. Migration runner (AppDatabase)
 
 ```dart
 // lib/core/database/app_database.dart
 
 class AppDatabase {
   static const _dbName = 'food_app.db';
-  static const _currentVersion = 1;
+  static const _currentVersion = 2;
 
   // ▸ Register every migration here in ascending version order.
   static final List<AppMigration> _migrations = [
     V1CreateMealEntries(),
-    // V2AddIndexOnDate(),   ← future migrations appended here
+    V2CreateAiLogs(),
+    // V3SomeChange(),   ← future migrations appended here
   ];
 
   Future<Database> open() {
@@ -392,12 +497,12 @@ class AppDatabase {
 }
 ```
 
-### 5d. How to add a future migration
+### 5e. How to add a future migration
 
-1. Create `lib/core/database/migrations/v2_<description>.dart` extending `AppMigration`.
+1. Create `lib/core/database/migrations/v3_<description>.dart` extending `AppMigration`.
 2. Implement `up()` (and optionally `down()`).
 3. Append the instance to `_migrations` in `AppDatabase`.
-4. Bump `_currentVersion` to `2`.
+4. Bump `_currentVersion` to `3`.
 
 The runner will automatically apply only the migrations between the user's current on-disk version
 and the new version.
@@ -536,10 +641,24 @@ formatted via `DateFormat('d MMMM yyyy')`.
 - Disabled when the Description field is empty or when an AI call is already in progress.
 - When pressed, calls `ref.read(aiMacroProvider.notifier).estimate(description)`.
 - While loading, the button icon is replaced by a `CircularProgressIndicator` (size 16).
-- On success, calls `ref.read(mealEntryEditProvider.notifier).update(filledEntry)` to populate
-  all nutrient fields in the form.
+- On success, shows the **AI-Fill Result bottom sheet** (see below) before writing the
+  estimated values to the form. Nutrient fields are populated only after the user dismisses
+  the sheet.
 - On error, shows a `SnackBar` with the error message; nutrient fields remain at their
   previous values.
+
+#### AI-Fill Result bottom sheet
+
+Displayed via `showModalBottomSheet(...)` immediately after a successful AI response,
+before any form fields are updated. The sheet is **not dismissible by dragging** — the
+user must tap the button to confirm.
+
+| Element | Details |
+|---|---|
+| Title | "AI Estimation Result" |
+| Confidence row | Label **"Confidence:"** followed by the value of `aiJson['confidence']` (`"high"`, `"medium"`, or `"low"`), styled with a colour badge: green for high, amber for medium, red for low |
+| Notes row | Label **"Notes:"** followed by the value of `aiJson['note']` (the AI's assumptions). If the note is empty or null, this row is omitted. |
+| Action button | `FilledButton` labelled **"Apply"**; tapping it closes the sheet, then calls `ref.read(mealEntryEditProvider.notifier).update(filledEntry)` to populate all nutrient fields and resets `aiMacroProvider` to idle. |
 
 #### Section B — Macronutrients (collapsible `NutrientSection`, initially expanded, **read-only**)
 
@@ -789,51 +908,123 @@ await dotenv.load(fileName: '.env');
 | Model | `gpt-4o-mini` |
 | `response_format` | `{ "type": "json_object" }` |
 | `temperature` | `0.2` (low for deterministic nutritional estimates) |
-| `max_tokens` | `800` |
+| `max_tokens` | `1500` |
 
 ### Prompt template
 
-**System message:**
+**System message** (sent once per API call — contains role, steps, and JSON schema):
 ```
-You are a precise nutritionist. Given a meal description, estimate the nutritional
-content and return ONLY a JSON object with the keys listed below. Use null (not 0)
-for values you cannot confidently estimate. Round all numbers to 1 decimal place.
+You are a precise nutritionist and expert in food nutritional values. Your task is to analyze the meal description and calculate the total nutritional values.
 
-Required keys (camelCase, matching Dart field names):
-calories, protein, totalFat, carbohydrates, dietaryFiber, sugars,
-saturatedFat, transFat, cholesterol, water,
-vitaminA, vitaminC, vitaminD, vitaminE, vitaminK,
-thiaminB1, riboflavinB2, niacinB3, vitaminB6, folateB9,
-vitaminB12, pantothenicAcidB5, biotinB7,
-calcium, iron, magnesium, phosphorus, potassium,
-sodium, zinc, copper, manganese, selenium,
-confidenceLevel, notes
+Follow these steps exactly:
+
+1. Break down the description into individual ingredients and their quantities in grams. If a quantity is not specified, use a realistic average portion (and note this in the "note" field).
+
+2. For each ingredient, look up the standard nutritional values per 100 g (use reliable average values from USDA, EU data, or generally accepted databases).
+
+3. Calculate the scaled values for the actual quantity in grams.
+
+4. Sum everything up for the entire meal.
+
+5. Return ONLY a valid JSON object, with no additional text, no introduction, no explanation outside the JSON. The JSON must follow this exact structure:
+
+{
+  "meal_description": "original description for reference",
+  "note": "any assumptions made",
+  "confidence": "high / medium / low",
+
+  "calories": number,
+  "protein": number,
+  "totalFat": number,
+  "carbohydrates": number,
+  "dietaryFiber": number,
+  "sugars": number,
+
+  "saturatedFat": number | null,
+  "transFat": number | null,
+
+  "vitaminA": number | null,
+  "vitaminC": number | null,
+  "vitaminD": number | null,
+  "vitaminE": number | null,
+  "vitaminK": number | null,
+  "thiaminB1": number | null,
+  "riboflavinB2": number | null,
+  "niacinB3": number | null,
+  "vitaminB6": number | null,
+  "folateB9": number | null,
+  "vitaminB12": number | null,
+  "pantothenicAcidB5": number | null,
+  "biotinB7": number | null,
+
+  "calcium": number | null,
+  "iron": number | null,
+  "magnesium": number | null,
+  "phosphorus": number | null,
+  "potassium": number | null,
+  "sodium": number | null,
+  "zinc": number | null,
+  "copper": number | null,
+  "manganese": number | null,
+  "selenium": number | null,
+
+  "cholesterol": number | null,
+  "water": number | null
+}
+
+Be very accurate with the numbers (round to 1 decimal place where appropriate). If any value is unknown, use 0 and add a note.
+Start immediately with the JSON object.
 ```
 
-**User message:**
+**User message** (one per call — contains only the meal description):
 ```
-Meal description: <description text from the form>
+Meal description: """<description text from the form>"""
 ```
 
-`confidenceLevel` is a string (`"high"` / `"medium"` / `"low"`); `notes` is a free-text
-string explaining any assumptions. Both are logged for debugging but not persisted to the DB.
+`confidence` is logged for debugging but not persisted to the DB.
 
 ### JSON response schema → MealEntry mapping
 
-| JSON key | `MealEntry` field | Unit | Required? |
-|---|---|---|---|
-| `calories` | `calories` | kcal | ✓ |
-| `protein` | `protein` | g | ✓ |
-| `totalFat` | `totalFat` | g | ✓ |
-| `carbohydrates` | `carbohydrates` | g | ✓ |
-| `dietaryFiber` | `dietaryFiber` | g | ✓ |
-| `sugars` | `sugars` | g | ✓ |
-| `saturatedFat` | `saturatedFat` | g | optional |
-| `transFat` | `transFat` | g | optional |
-| `cholesterol` | `cholesterol` | mg | optional |
-| `water` | `water` | ml | optional |
-| `vitaminA` … `biotinB7` | 13 vitamin fields | various | optional |
-| `calcium` … `selenium` | 10 mineral fields | various | optional |
+The JSON keys are camelCase and match the Dart field names exactly, so `MealEntry.fromAiJson()` reads them directly with no translation.
+
+| JSON key | `MealEntry` field | Type | Unit | Required? |
+|---|---|---|---|---|
+| `calories` | `calories` | `double` | kcal | ✓ |
+| `protein` | `protein` | `double` | g | ✓ |
+| `totalFat` | `totalFat` | `double` | g | ✓ |
+| `carbohydrates` | `carbohydrates` | `double` | g | ✓ |
+| `dietaryFiber` | `dietaryFiber` | `double` | g | ✓ |
+| `sugars` | `sugars` | `double` | g | ✓ |
+| `saturatedFat` | `saturatedFat` | `double?` | g | optional |
+| `transFat` | `transFat` | `double?` | g | optional |
+| `vitaminA` | `vitaminA` | `double?` | µg | optional |
+| `vitaminC` | `vitaminC` | `double?` | mg | optional |
+| `vitaminD` | `vitaminD` | `double?` | µg | optional |
+| `vitaminE` | `vitaminE` | `double?` | mg | optional |
+| `vitaminK` | `vitaminK` | `double?` | µg | optional |
+| `thiaminB1` | `thiaminB1` | `double?` | mg | optional |
+| `riboflavinB2` | `riboflavinB2` | `double?` | mg | optional |
+| `niacinB3` | `niacinB3` | `double?` | mg | optional |
+| `vitaminB6` | `vitaminB6` | `double?` | mg | optional |
+| `folateB9` | `folateB9` | `double?` | µg | optional |
+| `vitaminB12` | `vitaminB12` | `double?` | µg | optional |
+| `pantothenicAcidB5` | `pantothenicAcidB5` | `double?` | mg | optional |
+| `biotinB7` | `biotinB7` | `double?` | µg | optional |
+| `calcium` | `calcium` | `double?` | mg | optional |
+| `iron` | `iron` | `double?` | mg | optional |
+| `magnesium` | `magnesium` | `double?` | mg | optional |
+| `phosphorus` | `phosphorus` | `double?` | mg | optional |
+| `potassium` | `potassium` | `double?` | mg | optional |
+| `sodium` | `sodium` | `double?` | mg | optional |
+| `zinc` | `zinc` | `double?` | mg | optional |
+| `copper` | `copper` | `double?` | mg | optional |
+| `manganese` | `manganese` | `double?` | mg | optional |
+| `selenium` | `selenium` | `double?` | µg | optional |
+| `cholesterol` | `cholesterol` | `double?` | mg | optional |
+| `water` | `water` | `double?` | ml | optional |
+| `meal_description` | *(not mapped)* | `String` | — | logged only |
+| `note` | *(not mapped)* | `String` | — | logged only |
+| `confidence` | *(not mapped)* | `String` | — | logged only |
 
 ### `OpenAiService` — `lib/core/services/openai_service.dart`
 
@@ -882,8 +1073,10 @@ class AiMacroNotifier extends AsyncNotifier<MealEntry?> {
 
 The edit screen watches `aiMacroProvider` with `ref.listen(...)` to react to state changes:
 - `AsyncLoading` → disable AI-Fill button, show spinner.
-- `AsyncData(entry)` → call `mealEntryEditProvider.notifier.update(mergedEntry)`, reset
-  `aiMacroProvider` to idle, show a brief success `SnackBar`.
+- `AsyncData(entry)` → call `showModalBottomSheet(...)` to present the **AI-Fill Result
+  bottom sheet** (confidence level + notes). Only after the user taps **Apply** does the
+  sheet close and call `mealEntryEditProvider.notifier.update(mergedEntry)` followed by
+  `aiMacroProvider` reset to idle.
 - `AsyncError` → show error `SnackBar`, reset `aiMacroProvider` to idle.
 
 ### Error handling
